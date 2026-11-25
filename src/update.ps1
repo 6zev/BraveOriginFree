@@ -1,79 +1,99 @@
-# BraveOriginFree - Update Checker / Installer
+# BraveOriginFree - Update (self-updating, no prompts)
 #
-# Checks the official Brave GitHub releases for a newer Brave Origin build and,
-# unless -CheckOnly is given, downloads and installs the portable win32-x64
-# archive in place (with rollback to bin.bak on failure).
+# Checks the official Brave GitHub releases for a newer Brave Origin build and
+# installs it in place. Rollback to bin.bak if anything fails.
+#
+# Important: Brave publishes releases faster than it publishes Origin builds
+# (origin assets only appear on Stable releases, and not on every one). So we
+# scan the recent release list instead of trusting releases/latest, and pick
+# the newest one that actually ships brave-origin-v<v>-win32-x64.zip.
 
-param([switch]$CheckOnly)
+param([switch]$CheckOnly, [int]$ScanDepth = 40)
 
 $ErrorActionPreference = "Stop"
 
-$AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RootDir = Split-Path -Parent $AppDir
-$BinDir = Join-Path $RootDir "bin"
-$DataDir = Join-Path $RootDir "data"
+$AppDir    = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RootDir   = Split-Path -Parent $AppDir
+$BinDir    = Join-Path $RootDir "bin"
+$DataDir   = Join-Path $RootDir "data"
 $OriginExe = Join-Path $BinDir "brave.exe"
 $VersionFile = Join-Path $RootDir "version.txt"
+$ApiBase   = "https://api.github.com/repos/brave/brave-browser"
 
-Write-Host "BraveOriginFree - Update Checker" -ForegroundColor Cyan
+function Get-CurrentVersion {
+    if (Test-Path $VersionFile) {
+        $v = (Get-Content $VersionFile -Raw).Trim()
+        if ($v) { return $v }
+    }
+    if (Test-Path $OriginExe) {
+        try { return (Get-Item $OriginExe).VersionInfo.FileVersion } catch {}
+    }
+    return "unknown"
+}
+
+function Test-Newer($a, $b) {
+    try { return ([version]$a -gt [version]$b) } catch { return ($a -ne $b) }
+}
+
+function Get-ApiJson($url) {
+    $ProgressPreference = 'SilentlyContinue'
+    return (Invoke-WebRequest $url -UseBasicParsing -TimeoutSec 30 -Headers @{
+        'User-Agent' = 'BraveOriginFree-Updater'
+        'Accept'     = 'application/vnd.github+json'
+    }).Content | ConvertFrom-Json
+}
+
+function Find-LatestOrigin {
+    $releases = Get-ApiJson "$ApiBase/releases?per_page=$ScanDepth"
+    $candidates = @()
+    foreach ($r in $releases) {
+        $zipAsset = $r.assets | Where-Object { $_.name -match '^brave-origin-v[0-9.]+-win32-x64\.zip$' } | Select-Object -First 1
+        if ($null -eq $zipAsset) { continue }
+        $ver = $r.tag_name -replace '^v', ''
+        $candidates += [pscustomobject]@{ Version = $ver; Asset = $zipAsset; Prerelease = [bool]$r.prerelease }
+    }
+    if ($candidates.Count -eq 0) { return $null }
+    return ($candidates | Sort-Object { try { [version]$_.Version } catch { [version]'0.0.0' } } -Descending | Select-Object -First 1)
+}
+
+Write-Host "BraveOriginFree - Update" -ForegroundColor Cyan
 Write-Host ""
 
-# --- Current version --------------------------------------------------------
-
-$current = "unknown"
-if (Test-Path $VersionFile) {
-    $current = (Get-Content $VersionFile -Raw).Trim()
-} elseif (Test-Path $OriginExe) {
-    try { $current = (Get-Item $OriginExe).VersionInfo.FileVersion } catch {}
-}
+$current = Get-CurrentVersion
 Write-Host "Installed: v$current" -ForegroundColor Gray
-
-# --- Latest from GitHub -----------------------------------------------------
 
 Write-Host "Checking for updates..." -ForegroundColor Yellow
 try {
-    $release = Invoke-WebRequest "https://api.github.com/repos/brave/brave-browser/releases/latest" -UseBasicParsing -TimeoutSec 20 |
-        ConvertFrom-Json
-    $latest = $release.tag_name -replace '^v', ''
-    Write-Host "Latest:    v$latest" -ForegroundColor Gray
+    $target = Find-LatestOrigin
 } catch {
-    Write-Host "Could not reach GitHub. Check your internet." -ForegroundColor Red
+    Write-Host "Could not reach GitHub: $_" -ForegroundColor Red
     exit 1
 }
 
-# Compare as versions where possible, fall back to equality.
-$isCurrent = $false
-if ($current -eq $latest) {
-    $isCurrent = $true
-} else {
-    try {
-        $isCurrent = ([version]$current -ge [version]$latest)
-    } catch { $isCurrent = $false }
+if ($null -eq $target) {
+    Write-Host "No Brave Origin build found in the last $ScanDepth releases." -ForegroundColor Red
+    exit 1
 }
 
-if ($isCurrent) {
-    Write-Host "You have the latest version." -ForegroundColor Green
+$latest = $target.Version
+Write-Host "Latest:    v$latest" -ForegroundColor Gray
+
+if (-not (Test-Newer $latest $current)) {
+    Write-Host "Already up to date." -ForegroundColor Green
     exit 0
 }
 
-if ($current -eq "unknown") {
-    Write-Host "New version available: v$latest" -ForegroundColor Yellow
-} else {
-    Write-Host "Update available: v$current -> v$latest" -ForegroundColor Yellow
-}
-
+Write-Host "Update available: v$current -> v$latest" -ForegroundColor Yellow
 if ($CheckOnly) { exit 0 }
 
 # --- Download ---------------------------------------------------------------
 
-$zipName = "brave-origin-v$latest-win32-x64.zip"
-$zipUrl  = "https://github.com/brave/brave-browser/releases/download/v$latest/$zipName"
+$zipName = $target.Asset.name
 $zipPath = Join-Path $RootDir $zipName
-
-Write-Host "Downloading v$latest..." -ForegroundColor Yellow
+Write-Host "Downloading $zipName ..." -ForegroundColor Yellow
 try {
     $ProgressPreference = 'SilentlyContinue'
-    Invoke-WebRequest $zipUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 900
+    Invoke-WebRequest $target.Asset.browser_download_url -OutFile $zipPath -UseBasicParsing -TimeoutSec 900
 } catch {
     Write-Host "Download failed: $_" -ForegroundColor Red
     Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
@@ -87,7 +107,7 @@ if (Test-Path $backup) { Remove-Item -Recurse -Force $backup -ErrorAction Silent
 if (Test-Path $BinDir) {
     try {
         Move-Item $BinDir $backup -Force
-        Write-Host "Backed up old version to bin.bak" -ForegroundColor Gray
+        Write-Host "Backed up old build to bin.bak" -ForegroundColor Gray
     } catch {
         Write-Host "Could not back up bin\: $_" -ForegroundColor Red
         Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
@@ -100,24 +120,23 @@ if (Test-Path $BinDir) {
 New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 try {
     Expand-Archive -LiteralPath $zipPath -DestinationPath $BinDir -Force
-    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
     Set-Content -Path $VersionFile -Value $latest -Encoding ASCII -NoNewline
     Write-Host "Updated to v$latest" -ForegroundColor Green
 } catch {
     Write-Host "Extraction failed: $_" -ForegroundColor Red
     Remove-Item -Recurse -Force $BinDir -ErrorAction SilentlyContinue
     if (Test-Path $backup) { Move-Item $backup $BinDir -Force }
+    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
     exit 1
 }
 
-# Clean up the successful-update backup.
+Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $backup -ErrorAction SilentlyContinue
 
 # --- Re-apply activation ----------------------------------------------------
-# Note: version upgrades do not reset Local State, but older installs may have
-# lost it. Re-assert the two keys without touching anything else.
 
 $LocalState = Join-Path $DataDir "Local State"
+New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
 if (Test-Path $LocalState) {
     try {
         $state = Get-Content $LocalState -Raw | ConvertFrom-Json
@@ -151,4 +170,4 @@ if (Test-Path $LocalState) {
 }
 
 Write-Host ""
-Write-Host "Done. Run run.bat to start the updated browser." -ForegroundColor Cyan
+Write-Host "Done. v$latest is ready - run run.bat." -ForegroundColor Cyan

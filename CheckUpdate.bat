@@ -1,5 +1,5 @@
 @echo off
-title Brave Origin Free - Check for Updates
+title Brave Origin Free - Update
 color 0B
 setlocal
 
@@ -10,21 +10,17 @@ echo  ============================================
 echo     Brave Origin Free - Update
 echo  ============================================
 echo.
-echo   [1] Check only (no download)
-echo   [2] Check and install update
-echo.
-choice /C 12 /N /M " Choose [1/2]: "
-if errorlevel 2 goto :update
-if errorlevel 1 goto :check
 
-:check
-powershell -NoProfile -ExecutionPolicy Bypass -File "%APP_DIR%src\update.ps1" -CheckOnly
-echo.
-pause
-exit /b 0
-
-:update
+REM One click: check and install the newest Brave Origin build automatically.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%APP_DIR%src\update.ps1"
+set "RC=%ERRORLEVEL%"
+
+echo.
+if "%RC%"=="0" (
+    echo  Update finished.
+) else (
+    echo  Update did not complete. Exit code: %RC%
+)
 echo.
 pause
-exit /b 0
+exit /b %RC%

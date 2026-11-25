@@ -93,6 +93,6 @@ jobs:
             2. Extract anywhere
             3. Run install.bat (first time) or run.bat (any time)
 
-            Updating later: run CheckUpdate.bat (1 = check only, 2 = install).
+            Updating later: run CheckUpdate.bat and it installs the newest build.
             Shields lists missing: run FixShields.bat and pick 3.
           files: ${{ env.PACKAGE_PATH }}

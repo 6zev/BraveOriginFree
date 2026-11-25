@@ -19,7 +19,7 @@
 ## ✨ What's New in Latest Version
 
 - 🛡️ **Shields filter lists fixed** - Removed `--disable-component-update`, the flag that stopped Brave from downloading the default Shields lists. New `FixShields.bat` to diagnose and repair.
-- 🔄 **Real updater** - `CheckUpdate.bat` reads the official Brave GitHub release and can install the newer portable build in place (with rollback).
+- 🔄 **One-click updater** - `CheckUpdate.bat` finds and installs the newest Brave Origin build automatically (with rollback).
 - ⚡ **Faster Launch** - `Launch.bat` for instant startup with no menu delays
 - 🌐 **Set as Default Browser** - New `MakeDefault.bat` + `make-default.ps1` to register Brave Origin as your default browser (works without admin)
 - 📦 **Auto-Install Flow** - Smarter installer that launches automatically if not installed
@@ -54,8 +54,8 @@ On Linux, it's free. On Windows, Brave charges $60. This project removes that pa
 3. Also set via `Windows Settings → Apps → Default apps → Brave Origin Free` if needed
 
 ### Updating
-- Run `CheckUpdate.bat` → **1** to check only, **2** to download and install the newer portable build
-- Or run `src\update.ps1 -CheckOnly` from PowerShell
+- Run `CheckUpdate.bat` — it checks for the newest Brave Origin build and installs it in one step, then just start the browser again
+- Check without installing: `src\update.ps1 -CheckOnly` from PowerShell
 
 ---
 
@@ -103,7 +103,7 @@ BraveOriginFree/
 ├── install.bat       # First-time installer
 ├── run.bat           # Standard launcher (optimized)
 ├── Launch.bat        # Instant launcher
-├── CheckUpdate.bat   # Check / install updates from Brave releases
+├── CheckUpdate.bat   # Auto-update to the newest Brave Origin build
 ├── FixShields.bat    # Diagnose / repair Shields filter lists
 ├── MakeDefault.bat   # Set as default browser
 ├── make-default.ps1  # Default browser registration
