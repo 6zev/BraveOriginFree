@@ -54,7 +54,7 @@ On Linux, it's free. On Windows, Brave charges $60. This project removes that pa
 3. Also set via `Windows Settings → Apps → Default apps → Brave Origin Free` if needed
 
 ### Updating
-- Run `CheckUpdate.bat` — it checks for the newest Brave Origin build and installs it in one step, then just start the browser again
+- Run `CheckUpdate.bat` — it closes a running Brave (so the profile is not corrupted mid-update), then installs the newest build in one step; start the browser again when it finishes
 - Check without installing: `src\update.ps1 -CheckOnly` from PowerShell
 
 ---
@@ -91,7 +91,7 @@ The default Shields lists (EasyList, Brave Default Adblock Filters, …) are **n
 The old launchers passed `--disable-component-update` and pointed at a fresh `--user-data-dir`, so the updater never ran and the profile had no lists — Shields looked empty. The launchers no longer pass that flag, and `FixShields.bat` can detect and repair a profile that already lost its lists:
 
 1. Close Brave completely
-2. Run `FixShields.bat`, pick **3** (full repair)
+2. Run `FixShields.bat`, pick **3** (full repair) — it closes a running Brave itself before clearing the cache
 3. Launch the browser online once, then open `brave://components` and confirm **Ad Block Updater** has a version
 
 ---

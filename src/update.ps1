@@ -37,6 +37,51 @@ function Test-Newer($a, $b) {
     try { return ([version]$a -gt [version]$b) } catch { return ($a -ne $b) }
 }
 
+# Closing the browser before touching bin\ or data\ is mandatory: an open
+# brave.exe keeps file handles on bin\ and writes the profile on exit, so
+# swapping files under it corrupts the profile or leaves a locked/partial bin\.
+function Stop-RunningBrave {
+    param([int]$TimeoutSec = 20)
+
+    $taskkill = Get-Command taskkill.exe -ErrorAction SilentlyContinue
+    $procs = @(Get-Process -Name "brave", "brave_proxy", "chrome_proxy" -ErrorAction SilentlyContinue)
+    if ($procs.Count -eq 0) {
+        Write-Host "Brave is not running." -ForegroundColor Gray
+        return $true
+    }
+
+    Write-Host "Closing Brave ($($procs.Count) process(es))..." -ForegroundColor Yellow
+    # Graceful first: lets Brave flush the profile instead of killing the cache.
+    foreach ($p in $procs) {
+        try { if (-not $p.HasExited) { $null = $p.CloseMainWindow() } } catch {}
+    }
+    # A tray/minimized Brave has no main window; ask it to leave politely.
+    if ($taskkill) { $null = & $taskkill.Source /IM brave.exe 2>&1 }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 500
+        $left = @(Get-Process -Name "brave", "brave_proxy", "chrome_proxy" -ErrorAction SilentlyContinue)
+        if ($left.Count -eq 0) {
+            Write-Host "Brave closed cleanly." -ForegroundColor Green
+            return $true
+        }
+    }
+
+    Write-Host "Brave did not exit in time - terminating it." -ForegroundColor Yellow
+    if ($taskkill) { $null = & $taskkill.Source /F /T /IM brave.exe 2>&1 }
+    foreach ($p in @(Get-Process -Name "brave", "brave_proxy", "chrome_proxy" -ErrorAction SilentlyContinue)) {
+        try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch {}
+    }
+    Start-Sleep -Seconds 2
+
+    if (@(Get-Process -Name "brave", "brave_proxy", "chrome_proxy" -ErrorAction SilentlyContinue).Count -gt 0) {
+        Write-Host "Brave is still running - cannot continue safely." -ForegroundColor Red
+        return $false
+    }
+    return $true
+}
+
 function Get-ApiJson($url) {
     $ProgressPreference = 'SilentlyContinue'
     return (Invoke-WebRequest $url -UseBasicParsing -TimeoutSec 30 -Headers @{
@@ -117,6 +162,15 @@ if (-not (Test-Newer $latest $current)) {
 
 Write-Host "Update available: v$current -> v$latest" -ForegroundColor Yellow
 if ($CheckOnly) { exit 0 }
+
+# --- Close the browser ------------------------------------------------------
+# Must happen before anything is replaced, otherwise the profile is written by
+# the old build (or the files are locked) and the data ends up inconsistent.
+
+if (-not (Stop-RunningBrave)) {
+    Write-Host "Aborted - close Brave manually and run CheckUpdate.bat again." -ForegroundColor Red
+    exit 1
+}
 
 # --- Download ---------------------------------------------------------------
 

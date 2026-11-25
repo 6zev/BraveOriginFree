@@ -154,11 +154,37 @@ if (-not $state.Exists) {
     exit 1
 }
 
-# Refuse if the browser is running - it would rewrite the cache and/or lock it.
-$running = @(Get-Process -Name "brave" -ErrorAction SilentlyContinue)
+# The browser must be gone before the cache is cleared: an open brave.exe keeps
+# rewriting and locking the adblock component dir, which is exactly what makes
+# a "repaired" profile come back broken.
+$running = @(Get-Process -Name "brave", "brave_proxy", "chrome_proxy" -ErrorAction SilentlyContinue)
 if ($running.Count -gt 0) {
-    Write-Err "Brave is running. Close it completely, then run -Force again."
-    exit 1
+    Write-Warn2 "Brave is running - closing it first."
+    $taskkill = Get-Command taskkill.exe -ErrorAction SilentlyContinue
+    foreach ($p in $running) {
+        try { if (-not $p.HasExited) { $null = $p.CloseMainWindow() } } catch {}
+    }
+    if ($taskkill) { $null = & $taskkill.Source /IM brave.exe 2>&1 }
+
+    $deadline = (Get-Date).AddSeconds(20)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 500
+        if (@(Get-Process -Name "brave", "brave_proxy", "chrome_proxy" -ErrorAction SilentlyContinue).Count -eq 0) { break }
+    }
+    if (@(Get-Process -Name "brave", "brave_proxy", "chrome_proxy" -ErrorAction SilentlyContinue).Count -gt 0) {
+        Write-Info "Still running after 20s - forcing it to quit."
+        if ($taskkill) { $null = & $taskkill.Source /F /T /IM brave.exe 2>&1 }
+        foreach ($p in @(Get-Process -Name "brave", "brave_proxy", "chrome_proxy" -ErrorAction SilentlyContinue)) {
+            try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch {}
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    if (@(Get-Process -Name "brave", "brave_proxy", "chrome_proxy" -ErrorAction SilentlyContinue).Count -gt 0) {
+        Write-Err "Brave is still running and cannot be closed. Close it manually, then run -Force again."
+        exit 1
+    }
+    Write-Ok "Brave closed."
 }
 
 $removed = 0
