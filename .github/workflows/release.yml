@@ -56,20 +56,21 @@ jobs:
 
             $newest = $candidates | Sort-Object { try { [version]$_.Version } catch { [version]'0.0.0' } } -Descending | Select-Object -First 1
             $v = $newest.Version
-
-            # Skip the whole build when this version was already published.
             $skip = ''
+
+            # Skip the whole build when this tag is already published.
+            $headers = @{ 'User-Agent' = 'BraveOriginFree-CI'; 'Accept' = 'application/vnd.github+json' }
+            $exists = $false
             try {
-              $existing = gh release view "v$v" --json tagName 2>$null
-              if ($LASTEXITCODE -eq 0 -and $existing) { $skip = 'true' }
-            } catch { $skip = '' }
+              $tags = (Invoke-WebRequest 'https://api.github.com/repos/6zev/BraveOriginFree/releases?per_page=100' -UseBasicParsing -Headers $headers).Content | ConvertFrom-Json
+              if ($tags | Where-Object { $_.tag_name -eq "v$v" }) { $exists = $true }
+            } catch { $exists = $false }
+            if ($exists) { $skip = 'true' }
           }
 
           echo "Resolved version: v$v (skip=$skip)"
           "version=$v" >> $env:GITHUB_OUTPUT
           "skip=$skip" >> $env:GITHUB_OUTPUT
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Skip (already released)
         if: steps.ver.outputs.skip == 'true'
@@ -86,7 +87,10 @@ jobs:
           $zipPath = "brave-origin-v$v.zip"
 
           Write-Host "Downloading $zipUrl"
-          Invoke-WebRequest $zipUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 1200
+          # Big file - use curl.exe for speed and reliable retries.
+          $ProgressPreference = 'SilentlyContinue'
+          & curl.exe -fL --retry 5 --retry-delay 5 --retry-all-errors -o $zipPath $zipUrl
+          if ($LASTEXITCODE -ne 0) { throw "Download failed with curl exit $LASTEXITCODE" }
           Expand-Archive $zipPath -DestinationPath .\bin -Force
           Remove-Item $zipPath -Force
 
