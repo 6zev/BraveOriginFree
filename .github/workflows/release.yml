@@ -8,10 +8,16 @@ on:
         required: true
         default: 'latest'
   schedule:
-    - cron: '0 6 * * 1'
+    # Daily: rebuild automatically when Brave ships a new Origin build.
+    # The Resolve version step skips the run when that tag already exists.
+    - cron: '0 6 * * *'
 
 permissions:
   contents: write
+
+concurrency:
+  group: build-release
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -19,32 +25,74 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build
+      - name: Resolve version
+        id: ver
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $v = "${{ github.event.inputs.version || 'latest' }}"
-          
-          # Get version
-          if ($v -eq 'latest') {
-            $r = Invoke-WebRequest 'https://api.github.com/repos/brave/brave-browser/releases/latest' -UseBasicParsing | ConvertFrom-Json
-            $v = $r.tag_name -replace '^v', ''
+          $req = "${{ github.event.inputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($req)) { $req = 'latest' }
+
+          if ($req -ne 'latest') {
+            $v = $req -replace '^v', ''
+            $skip = ''
+          } else {
+            # Brave publishes releases faster than Origin builds, and origin
+            # assets are not on every tag. Scan the recent list and take the
+            # newest release that actually ships the win32-x64 Origin zip.
+            $headers = @{ 'User-Agent' = 'BraveOriginFree-CI'; 'Accept' = 'application/vnd.github+json' }
+            $rels = (Invoke-WebRequest 'https://api.github.com/repos/brave/brave-browser/releases?per_page=60' -UseBasicParsing -Headers $headers).Content | ConvertFrom-Json
+
+            $candidates = @()
+            foreach ($r in $rels) {
+              $asset = $r.assets | Where-Object { $_.name -match '^brave-origin-v[0-9.]+-win32-x64\.zip$' } | Select-Object -First 1
+              if ($null -eq $asset) { continue }
+              $candidates += [pscustomobject]@{
+                Version = ($r.tag_name -replace '^v','')
+                Prerelease = [bool]$r.prerelease
+              }
+            }
+            if ($candidates.Count -eq 0) { throw 'No Brave Origin win32-x64 build found in the last 60 releases.' }
+
+            $newest = $candidates | Sort-Object { try { [version]$_.Version } catch { [version]'0.0.0' } } -Descending | Select-Object -First 1
+            $v = $newest.Version
+
+            # Skip the whole build when this version was already published.
+            $skip = ''
+            try {
+              $existing = gh release view "v$v" --json tagName 2>$null
+              if ($LASTEXITCODE -eq 0 -and $existing) { $skip = 'true' }
+            } catch { $skip = '' }
           }
-          echo "Version: v$v"
-          
-          # Download
+
+          echo "Resolved version: v$v (skip=$skip)"
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "skip=$skip" >> $env:GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip (already released)
+        if: steps.ver.outputs.skip == 'true'
+        shell: pwsh
+        run: echo "v${{ steps.ver.outputs.version }} is already released - nothing to build."
+
+      - name: Build package
+        if: steps.ver.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = "${{ steps.ver.outputs.version }}"
           $zipUrl = "https://github.com/brave/brave-browser/releases/download/v$v/brave-origin-v$v-win32-x64.zip"
           $zipPath = "brave-origin-v$v.zip"
-          Invoke-WebRequest $zipUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 600
-          
-          # Extract
-          Expand-Archive $zipPath .\bin -Force
+
+          Write-Host "Downloading $zipUrl"
+          Invoke-WebRequest $zipUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 1200
+          Expand-Archive $zipPath -DestinationPath .\bin -Force
           Remove-Item $zipPath -Force
-          
-          # Create release package
+
           $relDir = "BraveOriginFree-v$v"
           New-Item -ItemType Directory -Path $relDir -Force | Out-Null
-          
+
           # Every launcher/updater script a user needs for update + shields repair
           $files = @(
             'install.bat','run.bat','Launch.bat','CheckUpdate.bat','FixShields.bat',
@@ -53,7 +101,7 @@ jobs:
           )
           foreach ($f in $files) { if (Test-Path $f) { Copy-Item $f -Destination $relDir -Force } }
           Copy-Item config, profile, src, bin -Destination $relDir -Recurse -Force
-          
+
           # Record the bundled version so CheckUpdate.bat reports accurately
           Set-Content -Path "$relDir\version.txt" -Value $v -Encoding ASCII -NoNewline
           # Ship an up-to-date Local State so activation is present on first run
@@ -61,26 +109,24 @@ jobs:
             New-Item -ItemType Directory -Path "$relDir\data" -Force | Out-Null
             Copy-Item 'profile\Local State' -Destination "$relDir\data\Local State" -Force
           }
-          
-          Remove-Item -Recurse -Force "$relDir\bin\149.*" -ErrorAction SilentlyContinue
-          
-          # Create zip
+
+          # Create zip (fast path, no recompress of the already-compressed payload)
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $zip = "BraveOriginFree-v$v.zip"
-          [System.IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path $relDir), (Join-Path (Resolve-Path '.') $zip))
+          [System.IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path $relDir), (Join-Path (Resolve-Path '.') $zip), [System.IO.Compression.CompressionLevel]::Fastest, $false)
           Remove-Item -Recurse -Force $relDir -ErrorAction SilentlyContinue
-          
-          echo "PACKAGE_PATH=$(Resolve-Path $zip)" >> $env:GITHUB_ENV
-          echo "PACKAGE_NAME=$zip" >> $env:GITHUB_ENV
-          echo "RELEASE_VERSION=$v" >> $env:GITHUB_ENV
+
+          "package=$zip" >> $env:GITHUB_OUTPUT
+        id: build
 
       - name: Release
+        if: steps.ver.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ env.RELEASE_VERSION }}
-          name: BraveOriginFree v${{ env.RELEASE_VERSION }}
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: BraveOriginFree v${{ steps.ver.outputs.version }}
           body: |
-            BraveOriginFree v${{ env.RELEASE_VERSION }}
+            BraveOriginFree v${{ steps.ver.outputs.version }}
 
             Brave Origin for Windows - Free. No purchase required.
 
@@ -95,4 +141,4 @@ jobs:
 
             Updating later: run CheckUpdate.bat and it installs the newest build.
             Shields lists missing: run FixShields.bat and pick 3.
-          files: ${{ env.PACKAGE_PATH }}
+          files: ${{ steps.build.outputs.package }}
