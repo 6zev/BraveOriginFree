@@ -1,12 +1,12 @@
 # BraveOriginFree - Update (self-updating, no prompts)
 #
-# Checks the official Brave GitHub releases for a newer Brave Origin build and
-# installs it in place. Rollback to bin.bak if anything fails.
+# Downloads the newest BraveOriginFree package built by this project's own
+# GitHub Actions workflow and installs it in place. That package already
+# contains bin\ (the Brave Origin binary), the launchers and a pre-applied
+# Local State, so nothing is compiled locally. Rollback to bin.bak on failure.
 #
-# Important: Brave publishes releases faster than it publishes Origin builds
-# (origin assets only appear on Stable releases, and not on every one). So we
-# scan the recent release list instead of trusting releases/latest, and pick
-# the newest one that actually ships brave-origin-v<v>-win32-x64.zip.
+# Only fall back to fetching the raw Brave Origin zip when no BraveOriginFree
+# release exists yet (fresh repo/brand-new install).
 
 param([switch]$CheckOnly, [int]$ScanDepth = 40)
 
@@ -18,7 +18,9 @@ $BinDir    = Join-Path $RootDir "bin"
 $DataDir   = Join-Path $RootDir "data"
 $OriginExe = Join-Path $BinDir "brave.exe"
 $VersionFile = Join-Path $RootDir "version.txt"
-$ApiBase   = "https://api.github.com/repos/brave/brave-browser"
+$OwnRepo   = "6zev/BraveOriginFree"
+$ApiBase   = "https://api.github.com/repos/$OwnRepo"
+$BraveApi  = "https://api.github.com/repos/brave/brave-browser"
 
 function Get-CurrentVersion {
     if (Test-Path $VersionFile) {
@@ -43,14 +45,40 @@ function Get-ApiJson($url) {
     }).Content | ConvertFrom-Json
 }
 
-function Find-LatestOrigin {
+# A BraveOriginFree release ships BraveOriginFree-v<v>.zip at the repo root
+# of the archive (already assembled), so it is a drop-in replacement.
+function Find-LatestPackage {
     $releases = Get-ApiJson "$ApiBase/releases?per_page=$ScanDepth"
+    $candidates = @()
+    foreach ($r in $releases) {
+        $pkg = $r.assets | Where-Object { $_.name -match '^BraveOriginFree-v[0-9.]+\.zip$' } | Select-Object -First 1
+        if ($null -eq $pkg) { continue }
+        $ver = $r.tag_name -replace '^v', ''
+        $candidates += [pscustomobject]@{
+            Version = $ver
+            Url     = $pkg.browser_download_url
+            Name    = $pkg.name
+            Layout  = 'package'
+        }
+    }
+    if ($candidates.Count -eq 0) { return $null }
+    return ($candidates | Sort-Object { try { [version]$_.Version } catch { [version]'0.0.0' } } -Descending | Select-Object -First 1)
+}
+
+# Fallback: no BraveOriginFree release yet -> take the raw Brave Origin build.
+function Find-LatestOrigin {
+    $releases = Get-ApiJson "$BraveApi/releases?per_page=$ScanDepth"
     $candidates = @()
     foreach ($r in $releases) {
         $zipAsset = $r.assets | Where-Object { $_.name -match '^brave-origin-v[0-9.]+-win32-x64\.zip$' } | Select-Object -First 1
         if ($null -eq $zipAsset) { continue }
         $ver = $r.tag_name -replace '^v', ''
-        $candidates += [pscustomobject]@{ Version = $ver; Asset = $zipAsset; Prerelease = [bool]$r.prerelease }
+        $candidates += [pscustomobject]@{
+            Version = $ver
+            Url     = $zipAsset.browser_download_url
+            Name    = $zipAsset.name
+            Layout  = 'origin'
+        }
     }
     if ($candidates.Count -eq 0) { return $null }
     return ($candidates | Sort-Object { try { [version]$_.Version } catch { [version]'0.0.0' } } -Descending | Select-Object -First 1)
@@ -64,14 +92,18 @@ Write-Host "Installed: v$current" -ForegroundColor Gray
 
 Write-Host "Checking for updates..." -ForegroundColor Yellow
 try {
-    $target = Find-LatestOrigin
+    $target = Find-LatestPackage
+    if ($null -eq $target) {
+        Write-Host "No BraveOriginFree release published yet - falling back to the raw Brave Origin build." -ForegroundColor DarkYellow
+        $target = Find-LatestOrigin
+    }
 } catch {
     Write-Host "Could not reach GitHub: $_" -ForegroundColor Red
     exit 1
 }
 
 if ($null -eq $target) {
-    Write-Host "No Brave Origin build found in the last $ScanDepth releases." -ForegroundColor Red
+    Write-Host "No update source found in the last $ScanDepth releases." -ForegroundColor Red
     exit 1
 }
 
@@ -88,19 +120,42 @@ if ($CheckOnly) { exit 0 }
 
 # --- Download ---------------------------------------------------------------
 
-$zipName = $target.Asset.name
+$zipName = $target.Name
 $zipPath = Join-Path $RootDir $zipName
+$staging = Join-Path $RootDir "_update.tmp"
 Write-Host "Downloading $zipName ..." -ForegroundColor Yellow
 try {
     $ProgressPreference = 'SilentlyContinue'
-    Invoke-WebRequest $target.Asset.browser_download_url -OutFile $zipPath -UseBasicParsing -TimeoutSec 900
+    Invoke-WebRequest $target.Url -OutFile $zipPath -UseBasicParsing -TimeoutSec 900
 } catch {
     Write-Host "Download failed: $_" -ForegroundColor Red
     Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
     exit 1
 }
 
-# --- Backup -----------------------------------------------------------------
+# --- Unpack to staging ------------------------------------------------------
+# Unpack first and only swap when the result looks usable, so a corrupt
+# download never leaves the install without a browser.
+
+if (Test-Path $staging) { Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue }
+try {
+    Expand-Archive -LiteralPath $zipPath -DestinationPath $staging -Force
+} catch {
+    Write-Host "Extraction failed: $_" -ForegroundColor Red
+    Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
+    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+    exit 1
+}
+Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+
+$stagedBin = Join-Path $staging "bin"
+if (-not (Test-Path (Join-Path $stagedBin "brave.exe"))) {
+    Write-Host "Downloaded archive has no bin\brave.exe - aborting." -ForegroundColor Red
+    Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
+    exit 1
+}
+
+# --- Swap in ----------------------------------------------------------------
 
 $backup = Join-Path $RootDir "bin.bak"
 if (Test-Path $backup) { Remove-Item -Recurse -Force $backup -ErrorAction SilentlyContinue }
@@ -110,27 +165,33 @@ if (Test-Path $BinDir) {
         Write-Host "Backed up old build to bin.bak" -ForegroundColor Gray
     } catch {
         Write-Host "Could not back up bin\: $_" -ForegroundColor Red
-        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
         exit 1
     }
 }
 
-# --- Extract ----------------------------------------------------------------
-
-New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 try {
-    Expand-Archive -LiteralPath $zipPath -DestinationPath $BinDir -Force
+    Move-Item $stagedBin $BinDir -Force
+    # A BraveOriginFree package also carries refreshed launchers and helpers.
+    if ($target.Layout -eq 'package') {
+        foreach ($item in @('install.bat','run.bat','Launch.bat','CheckUpdate.bat','FixShields.bat','MakeDefault.bat','make-default.ps1','README.md','CHANGELOG.md')) {
+            $srcItem = Join-Path $staging $item
+            if (Test-Path $srcItem) { Copy-Item $srcItem -Destination $RootDir -Force }
+        }
+        $srcDir = Join-Path $staging "src"
+        if (Test-Path $srcDir) { Copy-Item (Join-Path $srcDir '*') -Destination $AppDir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
     Set-Content -Path $VersionFile -Value $latest -Encoding ASCII -NoNewline
     Write-Host "Updated to v$latest" -ForegroundColor Green
 } catch {
-    Write-Host "Extraction failed: $_" -ForegroundColor Red
+    Write-Host "Install failed: $_" -ForegroundColor Red
     Remove-Item -Recurse -Force $BinDir -ErrorAction SilentlyContinue
     if (Test-Path $backup) { Move-Item $backup $BinDir -Force }
-    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
     exit 1
 }
 
-Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $backup -ErrorAction SilentlyContinue
 
 # --- Re-apply activation ----------------------------------------------------

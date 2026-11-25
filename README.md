@@ -19,7 +19,7 @@
 ## ✨ What's New in Latest Version
 
 - 🛡️ **Shields filter lists fixed** - Removed `--disable-component-update`, the flag that stopped Brave from downloading the default Shields lists. New `FixShields.bat` to diagnose and repair.
-- 🔄 **One-click updater** - `CheckUpdate.bat` finds and installs the newest Brave Origin build automatically (with rollback).
+- 🔄 **One-click updater** - `CheckUpdate.bat` downloads the newest BraveOriginFree package from this repo's releases (falling back to the raw Brave Origin build if none exists yet) and installs it in place, with rollback.
 - ⚡ **Faster Launch** - `Launch.bat` for instant startup with no menu delays
 - 🌐 **Set as Default Browser** - New `MakeDefault.bat` + `make-default.ps1` to register Brave Origin as your default browser (works without admin)
 - 📦 **Auto-Install Flow** - Smarter installer that launches automatically if not installed
