@@ -53,13 +53,14 @@ set "VERSION=1.91.175"
 for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "try { $r = Invoke-WebRequest 'https://api.github.com/repos/brave/brave-browser/releases/latest' -UseBasicParsing -TimeoutSec 10 ^| ConvertFrom-Json; ($r.tag_name -replace '^v','') } catch { '' }" 2^>nul`) do if not "%%a"=="" set "VERSION=%%a"
 echo [V] Latest version: v%VERSION%
 
-:: Download
+:: Download the portable Origin archive published on Brave's GitHub releases.
+:: Asset name: brave-origin-v<VERSION>-win32-x64.zip
 set "ZIP_URL=https://github.com/brave/brave-browser/releases/download/v%VERSION%/brave-origin-v%VERSION%-win32-x64.zip"
 set "ZIP_FILE=%APP_DIR%brave-origin-v%VERSION%.zip"
 
-echo [~] Downloading Brave Origin v%VERSION% (150 MB)...
+echo [~] Downloading Brave Origin v%VERSION% (about 220 MB)...
 echo     This may take a minute depending on your internet speed.
-powershell -NoProfile -Command "try { $wc = New-Object System.Net.WebClient; Write-Host 'Downloading...'; $wc.DownloadFile('%ZIP_URL%', '%ZIP_FILE%'); Write-Host 'Done' } catch { Write-Host 'ERROR: ' + $_.Exception.Message; exit 1 }"
+powershell -NoProfile -Command "try { $ProgressPreference='SilentlyContinue'; Write-Host 'Downloading...'; Invoke-WebRequest -Uri '%ZIP_URL%' -OutFile '%ZIP_FILE%' -UseBasicParsing -TimeoutSec 900; Write-Host 'Done' } catch { Write-Host 'ERROR: ' + $_.Exception.Message; exit 1 }"
 if errorlevel 1 (
     echo [!] Download failed. Check your internet connection.
     echo     Alternative: Download manually from:
@@ -69,7 +70,9 @@ if errorlevel 1 (
 )
 echo [O] Download complete!
 
-:: Extract
+:: Extract. The archive is rooted at a version folder (e.g. 158.1.100.59\)
+:: with brave.exe + chrome_proxy.exe launchers on top. Flatten so that
+:: bin\brave.exe and bin\<version>\... both resolve for the launcher.
 if not exist "%BIN_DIR%" mkdir "%BIN_DIR%"
 echo [.] Extracting...
 powershell -NoProfile -Command "try { Expand-Archive -LiteralPath '%ZIP_FILE%' -DestinationPath '%BIN_DIR%' -Force; Write-Host 'Done' } catch { Write-Host 'ERROR: ' + $_.Exception.Message; exit 1 }"
@@ -126,7 +129,9 @@ echo.
 choice /C YN /M "Launch Brave Origin now"
 if errorlevel 2 exit /b 0
 
-:: Build flags
+:: Build flags. NOTE: component update MUST stay enabled so Brave can fetch
+:: the Shields default filter lists (Ad Block Updater, served from
+:: adblock-data.s3.brave.com). Disabling it empties the Shields list.
 set "FLAGS=--user-data-dir="%DATA_DIR%""
 set "FLAGS=%FLAGS% --no-first-run"
 set "FLAGS=%FLAGS% --no-default-browser-check"
@@ -137,9 +142,6 @@ set "FLAGS=%FLAGS% --disable-brave-news"
 set "FLAGS=%FLAGS% --disable-brave-talk"
 set "FLAGS=%FLAGS% --disable-brave-vpn"
 set "FLAGS=%FLAGS% --disable-brave-tor"
-set "FLAGS=%FLAGS% --disable-brave-update"
-set "FLAGS=%FLAGS% --disable-background-networking"
-set "FLAGS=%FLAGS% --disable-component-update"
 set "FLAGS=%FLAGS% --disable-sync"
 set "FLAGS=%FLAGS% --disable-features=BraveRewards,BraveWallet,BraveLeoAI,BraveNews,BraveTalk,BraveVPN,BraveTor,BraveP3A,BraveAds,Playlist,CryptoWallets,NativeBraveWallet,BraveNTPBrandedWallpaper,BraveTogether,BraveSpeedreader"
 

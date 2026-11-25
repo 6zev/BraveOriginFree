@@ -24,8 +24,9 @@ if not exist "%LOCAL_STATE%" (
     )
 )
 
-REM Fast launch without menu
-set "FLAGS=--user-data-dir="%DATA_DIR%" --no-first-run --no-default-browser-check --disable-brave-rewards --disable-brave-wallet --disable-brave-leo-ai --disable-brave-news --disable-brave-talk --disable-brave-vpn --disable-brave-tor --disable-brave-update --disable-background-networking --disable-component-update --disable-sync"
+REM Component update stays ENABLED so Shields can fetch its default filter
+REM lists (Ad Block Updater). Disabling it empties the default lists.
+set "FLAGS=--user-data-dir="%DATA_DIR%" --no-first-run --no-default-browser-check --disable-brave-rewards --disable-brave-wallet --disable-brave-leo-ai --disable-brave-news --disable-brave-talk --disable-brave-vpn --disable-brave-tor --disable-sync"
 
 start "" "%ORIGIN_EXE%" %FLAGS%
 exit /b 0

@@ -24,3 +24,6 @@ Desktop.ini
 
 # macOS junk
 .DS_Store
+
+# Tooling state
+.dsh-meow/

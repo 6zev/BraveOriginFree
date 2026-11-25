@@ -45,8 +45,23 @@ jobs:
           $relDir = "BraveOriginFree-v$v"
           New-Item -ItemType Directory -Path $relDir -Force | Out-Null
           
-          Copy-Item run.bat, install.bat, README.md, LICENSE, config, profile -Destination $relDir -Recurse -Force
-          Copy-Item src, bin -Destination $relDir -Recurse -Force
+          # Every launcher/updater script a user needs for update + shields repair
+          $files = @(
+            'install.bat','run.bat','Launch.bat','CheckUpdate.bat','FixShields.bat',
+            'MakeDefault.bat','make-default.ps1',
+            'README.md','LICENSE','CHANGELOG.md'
+          )
+          foreach ($f in $files) { if (Test-Path $f) { Copy-Item $f -Destination $relDir -Force } }
+          Copy-Item config, profile, src, bin -Destination $relDir -Recurse -Force
+          
+          # Record the bundled version so CheckUpdate.bat reports accurately
+          Set-Content -Path "$relDir\version.txt" -Value $v -Encoding ASCII -NoNewline
+          # Ship an up-to-date Local State so activation is present on first run
+          if (Test-Path 'profile\Local State') {
+            New-Item -ItemType Directory -Path "$relDir\data" -Force | Out-Null
+            Copy-Item 'profile\Local State' -Destination "$relDir\data\Local State" -Force
+          }
+          
           Remove-Item -Recurse -Force "$relDir\bin\149.*" -ErrorAction SilentlyContinue
           
           # Create zip
@@ -77,4 +92,7 @@ jobs:
             1. Download the ZIP
             2. Extract anywhere
             3. Run install.bat (first time) or run.bat (any time)
+
+            Updating later: run CheckUpdate.bat (1 = check only, 2 = install).
+            Shields lists missing: run FixShields.bat and pick 3.
           files: ${{ env.PACKAGE_PATH }}

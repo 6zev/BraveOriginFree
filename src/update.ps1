@@ -1,9 +1,15 @@
-# BraveOriginFree - Update Checker
+# BraveOriginFree - Update Checker / Installer
+#
+# Checks the official Brave GitHub releases for a newer Brave Origin build and,
+# unless -CheckOnly is given, downloads and installs the portable win32-x64
+# archive in place (with rollback to bin.bak on failure).
 
 param([switch]$CheckOnly)
 
+$ErrorActionPreference = "Stop"
+
 $AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RootDir = Resolve-Path (Join-Path $AppDir "..")
+$RootDir = Split-Path -Parent $AppDir
 $BinDir = Join-Path $RootDir "bin"
 $DataDir = Join-Path $RootDir "data"
 $OriginExe = Join-Path $BinDir "brave.exe"
@@ -12,7 +18,8 @@ $VersionFile = Join-Path $RootDir "version.txt"
 Write-Host "BraveOriginFree - Update Checker" -ForegroundColor Cyan
 Write-Host ""
 
-# Current version
+# --- Current version --------------------------------------------------------
+
 $current = "unknown"
 if (Test-Path $VersionFile) {
     $current = (Get-Content $VersionFile -Raw).Trim()
@@ -21,10 +28,12 @@ if (Test-Path $VersionFile) {
 }
 Write-Host "Installed: v$current" -ForegroundColor Gray
 
-# Latest from GitHub
+# --- Latest from GitHub -----------------------------------------------------
+
 Write-Host "Checking for updates..." -ForegroundColor Yellow
 try {
-    $release = Invoke-WebRequest "https://api.github.com/repos/brave/brave-browser/releases/latest" -UseBasicParsing -TimeoutSec 15 | ConvertFrom-Json
+    $release = Invoke-WebRequest "https://api.github.com/repos/brave/brave-browser/releases/latest" -UseBasicParsing -TimeoutSec 20 |
+        ConvertFrom-Json
     $latest = $release.tag_name -replace '^v', ''
     Write-Host "Latest:    v$latest" -ForegroundColor Gray
 } catch {
@@ -32,7 +41,17 @@ try {
     exit 1
 }
 
+# Compare as versions where possible, fall back to equality.
+$isCurrent = $false
 if ($current -eq $latest) {
+    $isCurrent = $true
+} else {
+    try {
+        $isCurrent = ([version]$current -ge [version]$latest)
+    } catch { $isCurrent = $false }
+}
+
+if ($isCurrent) {
     Write-Host "You have the latest version." -ForegroundColor Green
     exit 0
 }
@@ -45,56 +64,90 @@ if ($current -eq "unknown") {
 
 if ($CheckOnly) { exit 0 }
 
-# Download
-$zipUrl = "https://github.com/brave/brave-browser/releases/download/v$latest/brave-origin-v$latest-win32-x64.zip"
-$zipPath = Join-Path $RootDir "brave-origin-v$latest.zip"
+# --- Download ---------------------------------------------------------------
+
+$zipName = "brave-origin-v$latest-win32-x64.zip"
+$zipUrl  = "https://github.com/brave/brave-browser/releases/download/v$latest/$zipName"
+$zipPath = Join-Path $RootDir $zipName
 
 Write-Host "Downloading v$latest..." -ForegroundColor Yellow
 try {
-    Invoke-WebRequest $zipUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 600
+    $ProgressPreference = 'SilentlyContinue'
+    Invoke-WebRequest $zipUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 900
 } catch {
     Write-Host "Download failed: $_" -ForegroundColor Red
+    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
     exit 1
 }
 
-# Backup
+# --- Backup -----------------------------------------------------------------
+
 $backup = Join-Path $RootDir "bin.bak"
+if (Test-Path $backup) { Remove-Item -Recurse -Force $backup -ErrorAction SilentlyContinue }
 if (Test-Path $BinDir) {
-    Remove-Item -Recurse -Force $backup -ErrorAction SilentlyContinue
-    Move-Item $BinDir $backup -Force
-    Write-Host "Backed up old version" -ForegroundColor Gray
+    try {
+        Move-Item $BinDir $backup -Force
+        Write-Host "Backed up old version to bin.bak" -ForegroundColor Gray
+    } catch {
+        Write-Host "Could not back up bin\: $_" -ForegroundColor Red
+        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+        exit 1
+    }
 }
 
-# Extract
+# --- Extract ----------------------------------------------------------------
+
 New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 try {
-    Expand-Archive $zipPath $BinDir -Force
+    Expand-Archive -LiteralPath $zipPath -DestinationPath $BinDir -Force
     Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
-    $latest | Out-File $VersionFile -Encoding UTF8 -Force
+    Set-Content -Path $VersionFile -Value $latest -Encoding ASCII -NoNewline
     Write-Host "Updated to v$latest" -ForegroundColor Green
 } catch {
     Write-Host "Extraction failed: $_" -ForegroundColor Red
-    if (Test-Path $backup) {
-        Remove-Item -Recurse -Force $BinDir -ErrorAction SilentlyContinue
-        Move-Item $backup $BinDir -Force
-    }
+    Remove-Item -Recurse -Force $BinDir -ErrorAction SilentlyContinue
+    if (Test-Path $backup) { Move-Item $backup $BinDir -Force }
     exit 1
 }
 
-# Clean up
+# Clean up the successful-update backup.
 Remove-Item -Recurse -Force $backup -ErrorAction SilentlyContinue
 
-# Re-apply bypass
+# --- Re-apply activation ----------------------------------------------------
+# Note: version upgrades do not reset Local State, but older installs may have
+# lost it. Re-assert the two keys without touching anything else.
+
 $LocalState = Join-Path $DataDir "Local State"
 if (Test-Path $LocalState) {
     try {
         $state = Get-Content $LocalState -Raw | ConvertFrom-Json
-        if (-not $state.brave.origin.purchase_validated) {
-            $state.brave.origin = @{ purchase_validated = $true }
-            $state | ConvertTo-Json -Depth 10 -Compress | Out-File $LocalState -Encoding UTF8 -Force
+        $changed = $false
+
+        if ($null -eq $state.brave) { $state | Add-Member -MemberType NoteProperty -Name brave -Value ([pscustomobject]@{}) -Force }
+        if ($null -eq $state.brave.origin) {
+            $state.brave | Add-Member -MemberType NoteProperty -Name origin -Value ([pscustomobject]@{}) -Force
+        }
+        if ($state.brave.origin.purchase_validated -ne $true) {
+            $state.brave.origin | Add-Member -MemberType NoteProperty -Name purchase_validated -Value $true -Force
+            $changed = $true
+        }
+
+        if ($null -eq $state.skus) { $state | Add-Member -MemberType NoteProperty -Name skus -Value ([pscustomobject]@{}) -Force }
+        if ($null -eq $state.skus.state) {
+            $state.skus | Add-Member -MemberType NoteProperty -Name state -Value ([pscustomobject]@{}) -Force
+        }
+        if (-not $state.skus.state.PSObject.Properties.Name.Contains("67")) {
+            $state.skus.state | Add-Member -MemberType NoteProperty -Name "67" -Value '{"credentials":{"items":{"6":"7"}}}' -Force
+            $changed = $true
+        }
+
+        if ($changed) {
+            $state | ConvertTo-Json -Depth 20 -Compress | Set-Content $LocalState -Encoding UTF8 -Force
             Write-Host "Activation re-applied" -ForegroundColor Green
         }
-    } catch {}
+    } catch {
+        Write-Host "Activation check skipped: $_" -ForegroundColor Yellow
+    }
 }
 
 Write-Host ""
